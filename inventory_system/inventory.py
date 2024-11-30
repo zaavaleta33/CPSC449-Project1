@@ -3,8 +3,32 @@ from flask import Blueprint, jsonify, request, session
 from auth import login_required
 from extensions import db
 from models import InventoryItem
+from sqlalchemy.orm import joinedload
+from pymongo import MongoClient
+from bson import ObjectId
+
+
 
 inventory_bp = Blueprint('inventory', __name__)
+
+
+# Initialize MongoDB client
+client = MongoClient('mongodb://localhost:27017/')   
+mongo_db = client['database_name'] #need to change
+inventory_collection = mongo_db['inventory']
+
+
+# Helper to serialize MongoDB documents
+def serialize_item(item):
+    return {
+        'id': str(item['_id']),
+        'name': item['name'],
+        'description': item.get('description', ''),
+        'quantity': item['quantity'],
+        'price': item['price'],
+        'user_id': item['user_id'],
+        'created_at': item['created_at']
+    }
 
 # Create a new inventory item
 @inventory_bp.route('/inventory', methods=['POST'])
@@ -35,33 +59,56 @@ def create_item():
 @inventory_bp.route('/inventory', methods=['GET'])
 @login_required
 def get_items():
-    items = InventoryItem.query.filter_by(user_id=session['user_id']).all()
-    return jsonify([{
-        'id': item.id,
-        'name': item.name,
-        'description': item.description,
-        'quantity': item.quantity,
-        'price': item.price,
-        'created_at': item.created_at.isoformat()
-    } for item in items]), 200
+    if DB_TYPE == 'SQL':
+        # Query SQL database
+        items = InventoryItem.query.filter_by(user_id=session['user_id']).all()
+        return jsonify([{
+            'id': item.id,
+            'name': item.name,
+            'description': item.description,
+            'quantity': item.quantity,
+            'price': item.price,
+            'created_at': item.created_at.isoformat()
+        } for item in items]), 200
+
+    elif DB_TYPE == 'MongoDB':
+        # Query MongoDB
+        items = inventory_collection.find({'user_id': session['user_id']})
+        return jsonify([serialize_item(item) for item in items]), 200
+
+    return jsonify({'error': 'Unsupported database type'}), 500
+
 
 # Get a single inventory item by its ID
 @inventory_bp.route('/inventory/<int:item_id>', methods=['GET'])
 @login_required
 def get_item(item_id):
-    item = InventoryItem.query.filter_by(id=item_id, user_id=session['user_id']).first()
-    
-    if not item:
-        return jsonify({'error': 'Item not found'}), 404
-    
-    return jsonify({
-        'id': item.id,
-        'name': item.name,
-        'description': item.description,
-        'quantity': item.quantity,
-        'price': item.price,
-        'created_at': item.created_at.isoformat()
-    }), 200
+    if DB_TYPE == 'SQL':
+        # Query SQL database
+        item = InventoryItem.query.filter_by(id=item_id, user_id=session['user_id']).first()
+        if not item:
+            return jsonify({'error': 'Item not found'}), 404
+        return jsonify({
+            'id': item.id,
+            'name': item.name,
+            'description': item.description,
+            'quantity': item.quantity,
+            'price': item.price,
+            'created_at': item.created_at.isoformat()
+        }), 200
+
+    elif DB_TYPE == 'MongoDB':
+        # Query MongoDB
+        try:
+            item = inventory_collection.find_one({'_id': ObjectId(item_id), 'user_id': session['user_id']})
+            if not item:
+                return jsonify({'error': 'Item not found'}), 404
+            return jsonify(serialize_item(item)), 200
+        except Exception:
+            return jsonify({'error': 'Invalid item ID'}), 400
+
+    return jsonify({'error': 'Unsupported database type'}), 500
+
 
 # Update an inventory item
 @inventory_bp.route('/inventory/<int:item_id>', methods=['PUT'])
